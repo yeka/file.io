@@ -17,48 +17,52 @@ import (
 	"github.com/codenoid/file.io/storage"
 )
 
-var box *rice.Box
-var fs http.Handler
-var indexHTML []byte
-var stg storage.StorageHandler
-
 func main() {
-	box = rice.MustFindBox("web")
-	fs = http.FileServer(box.HTTPBox())
-	indexHTML, _ = box.Bytes("views/index.html")
+	box := rice.MustFindBox("web")
+	fs := http.FileServer(box.HTTPBox())
+	indexHTML, _ := box.Bytes("views/index.html")
 
-	database := os.Getenv("DATABASE")
-
-	if database == "" {
-		panic("empty DATABASE env, example value: redis://127.0.0.1:27017, badger:/path/to/folder;")
+	dsn := os.Getenv("DSN")
+	if dsn == "" {
+		dsn = "badger:./data"
 	}
 
-	conn, err := storage.Connect(database)
+	addr := os.Getenv("ADDR")
+	if addr == "" {
+		addr = ":8080"
+	}
+
+	strg, err := storage.Connect(dsn)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	stg = conn
 
 	// runtime test
-	if err := stg.Set("test", []byte("test"), 1*time.Second); err != nil {
-		fmt.Println("runtime test failed")
-		panic(err)
+	if err := strg.Set("test", []byte("test"), 1*time.Second); err != nil {
+		fmt.Println("runtime test failed:", err)
+		os.Exit(1)
 	}
 
-	fmt.Println("starting server on *:8080")
-	// start listen
-	fmt.Println(http.ListenAndServe(":8080", http.HandlerFunc(Index)))
+	srv := &Server{FS: fs, Storage: strg, IndexHTML: indexHTML}
+	fmt.Println("starting server on " + addr)
+	fmt.Println(http.ListenAndServe(addr, http.HandlerFunc(srv.Index)))
+}
+
+type Server struct {
+	FS        http.Handler
+	Storage   storage.StorageHandler
+	IndexHTML []byte
 }
 
 // Index for testing
-func Index(w http.ResponseWriter, r *http.Request) {
+func (srv *Server) Index(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 
 		// Serve static file
 		if len(r.URL.Path) > 7 {
 			if r.URL.Path[:7] == "/static" {
-				fs.ServeHTTP(w, r)
+				srv.FS.ServeHTTP(w, r)
 				return
 			}
 		}
@@ -66,7 +70,7 @@ func Index(w http.ResponseWriter, r *http.Request) {
 		// show index.html
 		if r.URL.Path == "/" {
 			w.Header().Set("Content-Type", "text/html")
-			w.Write(indexHTML)
+			w.Write(srv.IndexHTML)
 			return
 		}
 
@@ -75,17 +79,17 @@ func Index(w http.ResponseWriter, r *http.Request) {
 		if len(fileID) == 6 {
 
 			// get file from database
-			bytes, err := stg.Get(fileID)
+			bytes, err := srv.Storage.Get(fileID)
 			if err == nil {
 
 				drop := false
 				// download rate limiting, check if the quota are still sufficient
-				quotaByte, err := stg.Get("mg-" + fileID)
+				quotaByte, err := srv.Storage.Get("mg-" + fileID)
 				if err == nil {
 					quota, err := strconv.Atoi(string(quotaByte))
 					if err == nil {
 						// fix this
-						stg.Set("mg-"+fileID, []byte(strconv.Itoa(quota-1)), 0)
+						srv.Storage.Set("mg-"+fileID, []byte(strconv.Itoa(quota-1)), 0)
 						if quota <= 1 {
 							drop = true
 						}
@@ -93,7 +97,7 @@ func Index(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// set Content-Disposition header if fn-<file-id> are exist
-				filename, err := stg.Get("fn-" + fileID)
+				filename, err := srv.Storage.Get("fn-" + fileID)
 				if err == nil {
 					w.Header().Set("Content-Disposition", "attachment; filename="+string(filename))
 					if strings.Contains(string(filename), ".apk") {
@@ -108,14 +112,14 @@ func Index(w http.ResponseWriter, r *http.Request) {
 
 				if drop {
 					// Delete file from storage
-					stg.Del(fileID)
-					stg.Del("fn-" + fileID)
-					stg.Del("mg-" + fileID)
+					srv.Storage.Del(fileID)
+					srv.Storage.Del("fn-" + fileID)
+					srv.Storage.Del("mg-" + fileID)
 				}
 
 				return
 			}
-			stg.Del("mg-" + fileID)
+			srv.Storage.Del("mg-" + fileID)
 		}
 
 		w.WriteHeader(404)
@@ -168,12 +172,12 @@ func Index(w http.ResponseWriter, r *http.Request) {
 			id, err := gonanoid.Generate("AiUeO69", 6)
 			if err == nil {
 				// set file content with id as key
-				err = stg.Set(id, fileBytes, fileExp)
+				err = srv.Storage.Set(id, fileBytes, fileExp)
 				if err == nil {
 					// set file max get / read
-					stg.Set("mg-"+id, []byte(strconv.Itoa(maxDownload)), (fileExp + 10))
+					srv.Storage.Set("mg-"+id, []byte(strconv.Itoa(maxDownload)), (fileExp + 10))
 					// set file name expiration with fn-<file-id> as key
-					stg.Set("fn-"+id, []byte(fileHeader.Filename), (fileExp + 10))
+					srv.Storage.Set("fn-"+id, []byte(fileHeader.Filename), (fileExp + 10))
 					// setup json response
 					data := map[string]interface{}{
 						"success": true,

@@ -1,7 +1,10 @@
 package storage
 
 import (
+	"errors"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v7"
@@ -13,16 +16,20 @@ type Redis struct {
 }
 
 // Connect will start redis connection
-func (r *Redis) Connect(addr, password, database string) {
-	intf, err := strconv.Atoi(database)
+func (r Redis) Connect(dsn url.URL) (StorageHandler, error) {
+	db, err := strconv.Atoi(strings.TrimLeft(dsn.Path, "/"))
 	if err != nil {
-		panic(err)
+		return nil, errors.New("redis db must be integer: " + strings.TrimLeft(dsn.Path, "/"))
 	}
-	r.Conn = redis.NewClient(&redis.Options{
-		Addr:     addr,
-		Password: password, // no password set
-		DB:       intf,     // use default DB
+
+	pass, _ := dsn.User.Password()
+	conn := redis.NewClient(&redis.Options{
+		Addr:     dsn.Host,
+		Password: pass, // no password set
+		DB:       db,   // use default DB
 	})
+
+	return &Redis{conn}, nil
 }
 
 // Set set bytes file to redis using unique id as key

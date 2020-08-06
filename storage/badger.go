@@ -1,7 +1,7 @@
 package storage
 
 import (
-	"log"
+	"net/url"
 	"time"
 
 	"github.com/dgraph-io/badger"
@@ -13,12 +13,18 @@ type Badger struct {
 }
 
 // Connect will start redis connection
-func (r *Badger) Connect(database string) {
+func (r Badger) Connect(dsn url.URL) (StorageHandler, error) {
+	database := dsn.Opaque // for relative path, dsn => badger:./data
+	if database == "" {
+		database = dsn.Path // for absolute path, dsn => badger:/var/file.io/data
+	}
+
 	db, err := badger.Open(badger.DefaultOptions(database))
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
-	r.Conn = db
+
+	return &Badger{db}, nil
 }
 
 // Set set bytes file to redis using unique id as key
@@ -58,10 +64,7 @@ func (r *Badger) Get(key string) ([]byte, error) {
 
 // Del uwu
 func (r *Badger) Del(key string) {
-	r.Conn.Update(func(txn *badger.Txn) error {
-
-		txn.Delete([]byte(key))
-
-		return nil
+	_ = r.Conn.Update(func(txn *badger.Txn) error {
+		return txn.Delete([]byte(key))
 	})
 }
